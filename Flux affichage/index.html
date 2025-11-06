@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flux RSS - Régions</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        header { background: #4a5568; color: white; padding: 20px; text-align: center; border-radius: 10px 10px 0 0; }
+        h1 { font-size: 1.8rem; }
+        .filters { padding: 15px; background: #edf2f7; border-bottom: 1px solid #ddd; }
+        .filter-group { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .filter-label { font-weight: bold; }
+        select { padding: 8px 15px; border: 1px solid #ccc; border-radius: 5px; font-size: 1rem; }
+        button { padding: 8px 15px; background: #4a5568; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 1rem; }
+        button:hover { background: #2d3748; }
+        button:disabled { background: #a0aec0; cursor: not-allowed; }
+        .content { padding: 20px; }
+        .message { text-align: center; padding: 40px; color: #666; font-size: 1.1rem; }
+        .error { background: #fed7d7; color: #c53030; padding: 15px; border-radius: 5px; margin: 10px 0; text-align: left; }
+        .error code { background: #fff; padding: 2px 6px; border-radius: 3px; font-family: monospace; }
+        .error strong { display: block; margin-bottom: 10px; font-size: 1.1rem; }
+        .feed-container { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
+        .feed-item { border: 1px solid #e2e8f0; border-radius: 8px; padding: 15px; background: #fff; }
+        .feed-item:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        .feed-meta { display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 0.85rem; color: #666; }
+        .feed-region { background: #4a5568; color: white; padding: 3px 10px; border-radius: 10px; font-size: 0.8rem; }
+        .feed-title { font-size: 1.1rem; font-weight: bold; margin-bottom: 8px; }
+        .feed-title a { color: #2d3748; text-decoration: none; }
+        .feed-title a:hover { color: #4a5568; }
+        .feed-description { color: #4a5568; line-height: 1.5; margin-bottom: 10px; font-size: 0.95rem; }
+        .feed-link { color: #4a5568; text-decoration: none; font-weight: bold; font-size: 0.9rem; }
+        .feed-link:hover { text-decoration: underline; }
+        @media (max-width: 768px) { .feed-container { grid-template-columns: 1fr; } .filter-group { flex-direction: column; align-items: stretch; } select, button { width: 100%; } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📰 Flux RSS par Région</h1>
+        </header>
+        
+        <div class="filters">
+            <div class="filter-group">
+                <label class="filter-label" for="region-select">Région :</label>
+                <select id="region-select">
+                    <option value="all">Toutes les régions</option>
+                </select>
+                <button id="refresh-btn">🔄 Actualiser</button>
+            </div>
+        </div>
+        
+        <div class="content">
+            <div id="message" class="message">Chargement...</div>
+            <div id="feed-container" class="feed-container"></div>
+        </div>
+    </div>
+
+    <script>
+        // Liste des fichiers RSS (nom du fichier = nom de la région)
+        const RSS_FILES = [
+            'Alsace',
+            'Auvergne',
+            'Bourgogne-Franche',
+            'Champagne_Ardenr',
+            'Charentes',
+            'Corse',
+            'Haut-Poitou',
+            'Limousin',
+            'Lorraine',
+            'Nord_Aquitaine',
+            'Rhône-Alpes',
+            'Sud_Aquitaine'
+        ];
+        const RSS_FOLDER = './liste_des_flux/';
+        
+        let allArticles = [];
+        let currentFilter = 'all';
+        
+        // Vérifier si on est sur un serveur local
+        function checkLocalServer() {
+            if (window.location.protocol === 'file:') {
+                const msg = document.getElementById('message');
+                msg.innerHTML = `
+                    <div class="error">
+                        ⚠️ <strong>Erreur de protocole</strong><br><br>
+                        Vous devez ouvrir cette page via un serveur local, pas en double-cliquant sur le fichier.<br><br>
+                        <strong>Solution :</strong><br>
+                        1. Ouvrez un terminal dans le dossier<br>
+                        2. Tapez : <code>python -m http.server 8000</code><br>
+                        3. Allez sur : <a href="http://localhost:8000" target="_blank">http://localhost:8000</a>
+                    </div>
+                `;
+                return false;
+            }
+            return true;
+        }
+        
+        // Charger un fichier RSS
+        async function loadRSS(fileName) {
+            try {
+                const url = `${RSS_FOLDER}${fileName}.xml`;
+                console.log(`📡 Chargement de: ${url}`);
+                
+                const res = await fetch(url);
+                
+                if (!res.ok) {
+                    console.error(`❌ Erreur HTTP ${res.status} pour ${fileName}.xml`);
+                    return null;
+                }
+                
+                const text = await res.text();
+                console.log(`✅ Fichier ${fileName}.xml chargé (${text.length} caractères)`);
+                
+                const parser = new DOMParser();
+                const xml = parser.parseFromString(text, 'text/xml');
+                
+                // Vérifier si le XML est valide
+                const parseError = xml.querySelector('parsererror');
+                if (parseError) {
+                    console.error(`❌ XML invalide pour ${fileName}:`, parseError.textContent);
+                    return null;
+                }
+                
+                const items = xml.querySelectorAll('item');
+                console.log(`📰 ${items.length} article(s) trouvé(s) dans ${fileName}.xml`);
+                
+                if (items.length === 0) {
+                    console.warn(`⚠️ Aucun <item> trouvé dans ${fileName}.xml`);
+                    return null;
+                }
+                
+                const articles = [];
+                items.forEach((item, index) => {
+                    const title = item.querySelector('title')?.textContent || '';
+                    const link = item.querySelector('link')?.textContent || '';
+                    const desc = item.querySelector('description')?.textContent || '';
+                    const dateText = item.querySelector('pubDate')?.textContent || '';
+                    
+                    console.log(`  📄 Article ${index + 1}: ${title.substring(0, 50)}...`);
+                    
+                    articles.push({
+                        title: title.trim(),
+                        link: link.trim(),
+                        description: desc.replace(/<[^>]*>/g, '').trim().substring(0, 200),
+                        date: dateText ? new Date(dateText) : new Date(),
+                        region: fileName
+                    });
+                });
+                
+                return articles;
+            } catch (err) {
+                console.error(`❌ Erreur lors du chargement de ${fileName}:`, err.message);
+                
+                if (err.name === 'TypeError' && err.message.includes('Failed to fetch')) {
+                    console.error(`💡 Vérifiez que le fichier ${RSS_FOLDER}${fileName}.xml existe`);
+                }
+                
+                return null;
+            }
+        }
+        
+        // Charger tous les flux
+        async function loadAll() {
+            console.log('🚀 Démarrage du chargement des flux RSS...');
+            
+            // Vérifier le protocole
+            if (!checkLocalServer()) {
+                return;
+            }
+            
+            const btn = document.getElementById('refresh-btn');
+            const msg = document.getElementById('message');
+            const container = document.getElementById('feed-container');
+            
+            btn.disabled = true;
+            msg.textContent = 'Chargement...';
+            msg.className = 'message';
+            container.innerHTML = '';
+            
+            allArticles = [];
+            const regions = [];
+            let hasErrors = false;
+            
+            for (const file of RSS_FILES) {
+                const articles = await loadRSS(file);
+                if (articles && articles.length > 0) {
+                    allArticles.push(...articles);
+                    regions.push(file);
+                } else {
+                    hasErrors = true;
+                }
+            }
+            
+            console.log(`✅ Total: ${allArticles.length} article(s) chargé(s)`);
+            
+            // Afficher un avertissement si certains fichiers n'ont pas pu être chargés
+            if (hasErrors && allArticles.length === 0) {
+                msg.innerHTML = `
+                    <div class="error">
+                        ❌ <strong>Aucun flux RSS n'a pu être chargé</strong><br><br>
+                        Vérifiez que :<br>
+                        • Le dossier <code>liste_des_flux/</code> existe<br>
+                        • Les fichiers XML sont présents (ex: Auvergne.xml)<br>
+                        • Les fichiers contiennent des balises <code>&lt;item&gt;</code><br>
+                        • Le XML est bien formé<br><br>
+                        <small>Ouvrez la console (F12) pour plus de détails</small>
+                    </div>
+                `;
+                btn.disabled = false;
+                return;
+            }
+            
+            // Tri par date décroissante
+            allArticles.sort((a, b) => b.date - a.date);
+            
+            // Mise à jour du select
+            const select = document.getElementById('region-select');
+            const savedFilter = currentFilter;
+            select.innerHTML = '<option value="all">Toutes les régions</option>';
+            regions.forEach(r => {
+                const opt = document.createElement('option');
+                opt.value = r;
+                opt.textContent = r;
+                select.appendChild(opt);
+            });
+            
+            // Restaurer le filtre
+            if (regions.includes(savedFilter)) {
+                select.value = savedFilter;
+                currentFilter = savedFilter;
+            } else {
+                currentFilter = 'all';
+            }
+            
+            btn.disabled = false;
+            display();
+        }
+        
+        // Afficher les articles
+        function display() {
+            const msg = document.getElementById('message');
+            const container = document.getElementById('feed-container');
+            
+            let filtered = allArticles;
+            if (currentFilter !== 'all') {
+                filtered = allArticles.filter(a => a.region === currentFilter);
+            }
+            
+            if (filtered.length === 0) {
+                msg.textContent = 'Aucun article disponible pour cette région';
+                msg.className = 'message';
+                container.innerHTML = '';
+                return;
+            }
+            
+            msg.textContent = '';
+            container.innerHTML = filtered.map(a => `
+                <div class="feed-item">
+                    <div class="feed-meta">
+                        <span class="feed-region">${a.region}</span>
+                        <span>${a.date.toLocaleDateString('fr-FR')}</span>
+                    </div>
+                    <div class="feed-title">
+                        <a href="${a.link}" target="_blank">${a.title}</a>
+                    </div>
+                    <div class="feed-description">${a.description}</div>
+                    <a href="${a.link}" target="_blank" class="feed-link">Lire →</a>
+                </div>
+            `).join('');
+        }
+        
+        // Gestion des événements
+        document.getElementById('region-select').addEventListener('change', e => {
+            currentFilter = e.target.value;
+            display();
+        });
+        
+        document.getElementById('refresh-btn').addEventListener('click', loadAll);
+        
+        // Démarrage
+        console.log('📋 Configuration:');
+        console.log('  Fichiers RSS:', RSS_FILES);
+        console.log('  Dossier:', RSS_FOLDER);
+        console.log('  Protocole:', window.location.protocol);
+        loadAll();
+    </script>
+</body>
+</html>
